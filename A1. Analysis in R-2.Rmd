@@ -1,0 +1,246 @@
+---
+title: 'A1: Analysis in R'
+author: "Team 4"
+date: "2024-02-24"
+output: html_document
+---
+In our analysis, we delve into optimizing online marketing strategies for a major airline, focusing on leveraging data analytics to enhance digital ad campaigns. By scrutinizing the intricate relationship between advertisement spend, click-through rates, and booking conversions, we aim to uncover patterns that will drive efficiency in advertising expenditure. Our methodology integrates advanced statistical models and data visualization tools, employing a dataset that encompasses variables such as impressions, clicks, cost per click, and conversion rates across different campaigns. The goal is to provide actionable insights that could significantly improve the return on investment in digital marketing efforts, thereby enhancing overall profitability and market competitiveness for the airline. Through this analysis, we intend to illustrate the power of data analytics in making informed marketing decisions in a highly competitive sector.
+
+```{r}
+
+#loading libraries
+library(tidyverse)
+library(readxl)
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(reshape2)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Read the dataset
+data <- read_excel("/Users/alyssabrunen/Desktop/Hult Docs/San Francisco /Business Challenge 2/case_data.xlsx", sheet = "training_data")
+
+# Preliminary data exploration
+print(glimpse(data))
+```
+In the section above, the data and libraries were imported. The case data file was used throughout the following Analysis in R. Above, some preliminary data exploration has been conducted as well. In the glimpse we can see all the different columns, as well as their types and their first 10 rows. Seeing this at the first glance shows the team where adjustments need to be made and to correct missing values for example. 
+
+Below, the team is modifying the "data" table, to add more columns that will be used for the feature engineering models in Python.
+
+```{r}
+# Data cleaning: Impute missing values
+numeric_columns <- names(which(sapply(data, is.numeric)))
+data[numeric_columns] <- lapply(data[numeric_columns], function(x) ifelse(is.na(x), median(x, na.rm = TRUE), x))
+
+# Define Mode function for categorical data
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+categorical_columns <- names(which(sapply(data, is.character)))
+data[categorical_columns] <- lapply(data[categorical_columns], function(x) ifelse(is.na(x), Mode(x), x)) 
+```
+Within the Dataframe, columns had the values of N/A as well as missing values. In the code above, this was mitigated. Aside of this, the data was also split into both categorical and numerical columns to get a clearer vision on what the data shows and how to possibly feature engineer the dataframe into python for later use. 
+
+```{r}
+data <- data %>%
+  mutate(`Click Charge Ratio` = `Click Charges` / `Clicks`)
+
+# Replace Inf or NaN values with NA (if any occur due to division by zero)
+data$`Click Charge Ratio`[is.infinite(data$`Click Charge Ratio`)] <- NA
+data$`Click Charge Ratio`[is.nan(data$`Click Charge Ratio`)] <- NA
+
+head(data$`Click Charge Ratio`)
+```
+Feature 1: Click Charge to Clicks ratio 
+The team believes that this ratio has quite an importance to AirFrance's Marketing Team. To see what the ratio between the Click Charges and the Clicks are, gives the team a better understanding on what to concentrate on, especially when looking at the following feature. Through the output we can see the results of creating this ratio, which gives the team a better understanding of what numbers are appearing and how best to use them. 
+
+```{r}
+data <- data %>%
+  mutate(`Log Impressions` = log(`Impressions`))
+
+head(data$`Log Impressions`)
+```
+Feature 2: Log Impressions 
+The team chose to create another column for a logarithmic expression for the column impressions. This feature will also be used in the Python model as assistance to the the remaining two features. Similarly, seeing the first 6 rows of the logarithmic impressions, helps the team to see what the numbers are, and how best to possibly proceed with them. This helps the team to understand how to create a model better in Python. 
+
+```{r}
+data <- data %>%
+  mutate(`Bid Strategy Factor` = factor(data$`Bid Strategy`))
+
+data <- data %>%
+  mutate(Interaction = as.numeric(as.factor(`Bid Strategy Factor`)) * `Engine Click Thru %`)
+```
+Feature 3: Interaction of Bid Strategy and Engine Click Thru % 
+This feature we believe is also important, the reason why this was chosen was due to the the team wanting to see how much the Bid Strategy mattered when it came to the Click Throughs. If a bid was placed so that the advertisement was high on the top of the search page, the team assumes that the click through rate would also be high. 
+
+```{r}
+data$`Search Engine Bid Cut` <- cut(data$`Search Engine Bid`, 
+                                breaks = c(0, 3.5,7,11.5, Inf),
+                                labels = c("low", "moderate", "high","extreme"),
+                                right= TRUE, include.lowest=TRUE)
+
+data$`Search Engine Bid Cut` <- as.numeric(data$`Search Engine Bid Cut`)
+```
+Feature 4: Search Engine Bids categorized into different modes
+The code above is factoring the search engine bids into 4 different categories. These categories are namely low, moderate, high and extreme. 
+
+```{r}
+# Splitting data into training and testing sets
+training_index <- createDataPartition(data$`Total Volume of Bookings`, p = 0.8, list = FALSE)
+training_data <- data[training_index, ]
+testing_data <- data[-training_index, ]
+
+print(glimpse(training_data))
+```
+In the code above, the data frame was split into the training and testing data. The training data was also checked on missing values in case this needs to be further investigated. Through the output we can some of the entries that were excluded when splitting the initial dataframe. We can see that the training dataset holds 80% of the total dataframe's values, at 3,528 entries (rows). 
+
+```{r}
+print(glimpse(testing_data))
+```
+In the table above, we can see the different entries that were considered in the testing dataset. Through the splitting of the initial dataset, only 20% of all entries were incoorporated into the testing dataframe. 20% of the initial dataframe equate to 882 rows (entries). We can also see their type such as chr, num or factors. 
+```{r}
+# Visualizations
+# 1. Correlation Heatmap
+cor_data <- cor(training_data %>% select(where(is.numeric)))
+ggplot(melt(cor_data), aes(Var1, Var2, fill = value)) + 
+  geom_tile() + 
+  scale_fill_gradient2() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+In the visualization above, a correlation matrix can be seen. Through this visualization we can see that there are strong correlations between some of the values and columns. Some that are quite clear to have correlations are the Impressions and also the Clicks and Click charges. Another one is the Avg. Cost per Click and the Search Engine Bid, as the higher the Avg. Cost per click will mean a higher Search Engine Bid and vise versa. 
+```{r}
+# 2. Booking Conversion Rate by Campaign
+training_data %>%
+  group_by(Campaign) %>%
+  summarise(AverageConversionRate = mean(`Trans. Conv. %`, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(Campaign, -AverageConversionRate), y = AverageConversionRate)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Booking Conversion Rate by Campaign", x = "Campaign", y = "Average Conversion Rate (%)")
+```
+In the Visualization above, a histogram can be seen based on the Campaign and their individual avg. conversion rates. Here it is clear to see that the higher targeted the location of the flight is, the higher the conversion rate. As AirFrance is a French Airline, it was to be expected that especially their Western European Destinations would be highly anticipated to have a higher conversion rate than the remainders. The more east on the globe a flight campaign targets for, the lower the conversion rate, which is quite an interesting finding. With this in mind, it may be beneficial for AirFrance to consider continuing their western hemisphere marketing or strongly increasing their marketing techniques towards the east. 
+```{r}
+#3. Visualization Average Impressions and Keywords
+top_keywords <- training_data %>%
+  group_by(Keyword) %>%
+  summarise(AvgImpressions = mean(Impressions, na.rm = TRUE)) %>%
+  top_n(20, AvgImpressions) # Modify this number based on your data
+
+# Create the plot with improved readability
+ggplot(top_keywords, aes(x = reorder(Keyword, AvgImpressions), y = AvgImpressions)) +
+  geom_bar(stat = "identity", fill = "dodgerblue") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 16)
+  ) +
+  labs(title = "Top 20 Average Impressions by Keyword", x = "Keyword", y = "Average Impressions") +
+  coord_flip() # Flip coordinates for better readability
+```
+In the visualization above, the average impressions by keywords can be seen. As AirFrance is one of the more well known european airlines, it was expected that this airline would be able to receive large number of impressions for keywords such as "france travel", "europe travel" or "paris vacation". On the other hand, the keyword with the highest impressions is "airline ticket", which one can call a relatively "braod" keyword. This visualization shows that AirFrance is clearly benefitting from more generic and broader keywords and therefore receiving impressions. A  marketing strategy therefore would be to purchase more bids on keywords that are generic and would lead to AirFrance over other competition airlines. 
+
+```{r}
+#4. Visualization Avg. Cost per Click and Total Cost
+ggplot(data, aes(x = `Avg. Cost per Click`, y = `Total Cost`)) +
+  geom_point(color = "red", alpha = 0.5) +
+  labs(title = "Avg. Cost per Click vs. Total Cost") +
+  xlab("Avg. Cost per Click") +
+  ylab("Total Cost")
+```
+In the visualization above, it is clear to see that most of the Average Cost per click is quite low. What is interesting in this figure is that the, the lower the avg. cost per click, the more it was clicked by potential customers. Therefore the the total cost is higher, which means that the marketing team is succeeding when the total avg. cost per click is low. This also shows that the AirFrance Marketing Team should stay away from creating advertisement that has a high avg. per cost, concentrating on the low costs and through the large amount of clicks to generate more traffic on their site. Once a customer is on the site and created traffic, it would be great to advertise further and therefore generate more bookings. 
+```{r}
+# 5. Density Plot of "Avg. Cost per Click"
+ggplot(data, aes(x = `Avg. Cost per Click`)) +
+  geom_density(fill = "purple") +
+  labs(title = "Density of Avg. Cost per Click") +
+  xlab("Avg. Cost per Click") +
+  ylab("Density")
+```
+The visualization above is proving the assumption made for Visualization 4. We can see that in this density to avg. cost per click visualization that most advertisement are made with a low cost. Which is a good idea from a marketing perspective, as the lower the cost, seems to be creating more traffic to their website. This in turn will bring more customers steps closer to completing their booking. 
+
+```{r}
+# 6.  Histogram of Search Engine Bids
+ggplot(data =data, aes(x = `Search Engine Bid`)) +
+  geom_histogram(bins = 30, fill = "cornflowerblue", color = "black") +
+  labs(title = "Histogram of Search Engine Bids", x = "Search Engine Bid", y = "Frequency") +
+  theme_minimal()
+```
+In the histogram seen above, one can see that the most of the frequency of search engine bids are placed for below 9. At the same time, one can also see that AirFrance's strategy is to mainly have their bids for 6, which has the highest frequency amount. Aside of this, the Search Engine bid for 1 is the second highest, while 8 is the third highest. What this means to analysts is that their strategy is to both are willing to spend higher for better placements. Yet in the visualization above, we see that most of their advertisements occur with mainyl low avg. costs per click.  
+
+```{r}
+# 7.  Bar Chart of Click Charges by Publisher
+click_charges_by_publisher <- data %>%
+  group_by(`Publisher Name`) %>%
+  summarise(TotalClickCharges = sum(`Click Charges`, na.rm = TRUE)) %>%
+  arrange(desc(TotalClickCharges))
+
+ggplot(click_charges_by_publisher, aes(x = reorder(`Publisher Name`, TotalClickCharges), y = TotalClickCharges)) +
+  geom_bar(stat = "identity", fill = "salmon") +
+  labs(title = "Click Charges by Publisher", x = "Publisher Name", y = "Total Click Charges") +
+  theme_minimal() +
+  coord_flip() # Flipping coordinates for better readability
+
+```
+In this bar chart above, we can see the publisher names by their total click charges. It is clear to see that Google-US is far in the lead, while the Global Google is lower. Though one interesting sighting is that the click charges are highest for the US market, by taking the first, second, fifth and sixth spot. The global publishers are only holding the third, fourth and lastly the seventh spot. Even though the last placed click charges for the US market are above one other global, it is important to not which search engine they were, Yahoo and MSN. This may be due to these search engines not being used as frequently, therefore charging at low costs to create traffic. 
+
+```{r}
+# 8.  Average Position by Match Type
+avg_position_by_match <- data %>%
+  group_by(`Match Type`) %>%
+  summarise(AveragePosition = mean(`Avg. Pos.`, na.rm = TRUE)) %>%
+  arrange(AveragePosition)
+
+# Plot
+ggplot(avg_position_by_match, aes(x = `Match Type`, y = AveragePosition, fill = `Match Type`)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Ad Position by Match Type", x = "Match Type", y = "Average Position") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Pastel1")
+```
+In the visualization above, we can see a bar chart, that takes the average position with their Match type into account. We see that by far the highest bar is for the Exact match type, with an avg. position of roughly 2.75. This is followed by the Standard and Advanced matches. What this means for us that the lower the match type, in order of broad, standard, advanced and exact, the higher the avg. position. This means also that the Air France team is looking to achieve more traffic by being close but not exactly matching in order to achieve higher positions. 
+
+
+
+Top Three Actionable Insights
+1.Optimizing Keyword Strategies: Analysis reveals significant variances in performance across keyword groups, highlighting the potential for optimizing bid strategies to focus on high-conversion keywords. Leveraging insights from feature importance and average cost per click visualizations, reallocating budget towards these keywords can enhance visibility and conversions, maximizing campaign ROI.
+2. Enhancing Campaign Effectiveness: The campaign effectiveness over time visualization indicates fluctuating performance, suggesting the need for dynamic campaign adjustments. Implementing a data-driven approach to regularly review campaign metrics and applying machine learning models to predict performance can guide timely optimization, improving overall effectiveness.
+3. Improving Booking Conversion Rates: The booking conversion rate by campaign analysis uncovers varying levels of efficiency in converting impressions to bookings. Focusing on refining ad copy, landing page experiences, and targeted offers for campaigns with lower conversion rates can significantly lift performance and drive revenue growth.
+
+Conclusion
+Our analysis has demonstrated the significant impact of data-driven strategies in optimizing online marketing efforts for the airline industry. By harnessing advanced analytics, we identified key factors that influence booking conversions, including the optimization of cost per click and the strategic allocation of advertising spend across various platforms. The insights derived from our models underscore the importance of targeted campaigns, highlighting the potential for increased efficiency and effectiveness in digital marketing endeavors. These findings not only offer a roadmap for enhancing return on investment but also pave the way for future research and development in marketing analytics within the highly competitive airline sector. Our conclusions reinforce the critical role of data analytics in shaping innovative marketing strategies that cater to the dynamic demands of the digital age.
+
+Bibliography
+
+Chaffey, D., & Ellis-Chadwick, F. (2019). Digital Marketing: Strategy, Implementation and Practice. Pearson. 
+(Insights into digital marketing strategies and practices)
+
+Hastie, T., Tibshirani, R., & Friedman, J. (2017). The Elements of Statistical Learning: Data Mining, Inference, and Prediction. Springer. 
+(explanations of machine learning techniques, such as Random Forest, used in Team's analysis)
+
+Varian, H. R. (2014). Big Data: New Tricks for Econometrics. Journal of Economic Perspectives, 28(2), 3-28. (Understanding how big data can be utilized in econometrics and business analytics)
+
+OpenAI. (2022). ChatGPT (Dec 20 version) [Large language model]. https://chat.openai.com 
+(used for code corrections)
+
+
+```{r}
+setwd("/Users/alyssabrunen/Desktop/Team 4")
+getwd()
+
+
+write.csv(data, "data.csv", row.names = FALSE)
+write.csv(testing_data, "testing_data.csv", row.names = FALSE)
+write.csv(training_data, "training_data.csv", row.names = FALSE)
+```
+The code above saves the created csv files into personal directories, in order to be used in the python model. 
+
+
+
